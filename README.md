@@ -23,7 +23,7 @@ Yet another hogan.js(moustache templates) middleware. Can render templates with 
 **Use as broadway plugin for flatiron**
 ``` js
     app.use(hoganyam.plugin, {dir: viewsDir, ext: app.config.get('.html')});
-    // now you render directly to the response
+    // now you can render directly to the response
     app.render(res, 'templatename', { title: 'Hello Hogan'});
 ```
 
