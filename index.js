@@ -14,8 +14,8 @@ var hogan = require('hogan.js'),
     fs = require('fs'),
     path = require('path'),
     url = require('url'),
+    utile = require('utile'),
     async = require('async'),
-    _ = require('underscore'),
     winston = require('winston');
 
 //
@@ -53,7 +53,6 @@ function provide(srcDir, options) {
   options = options || {};
   options.cache = options.cache || srcCache;
   options.namespace = options.namespace || 'templates';
-  // options.prefixpath = options.prefixpath || 'templates';
   options.hoganOptions = options.hoganOptions || {};
   options.hoganOptions.asString = true;
   options.processTemplate = createTemplateSource;
@@ -67,20 +66,22 @@ function provide(srcDir, options) {
 
     // build an absolute path
     var pathname = url.parse(req.url).pathname,
+        opts = utile.clone(options), // clone to avoid async race
         parts, srcFile;
 
     if (!pathname.match(dstExt)) return next();
 
     // remove the prefixpath if there is one
     parts = pathname.split('/');
-    if (options.prefixpath) {
-      if (parts[1] !== options.prefixpath) return next();
+    if (opts.prefixpath) {
+      if (parts[1] !== opts.prefixpath) return next();
       pathname = '/' + parts.slice(2, parts.length).join('/');
     }
     srcFile = path.join(srcDir, pathname).replace(dstExt, srcExt);
 
-    options.cacheKey = srcFile;
-    getTemplate(srcFile, options, function(err,t) {
+    opts.cacheKey = srcFile;
+    winston.info('setting cachekey to: ' + srcFile);
+    getTemplate(srcFile, opts, function(err,t) {
       if (err) return next(err);
       res.setHeader('Date', new Date().toUTCString());
       res.setHeader('Last-Modified', t.mtime.toUTCString());
@@ -140,7 +141,7 @@ function render(file, context, options, callback) {
 //
 function getTemplate(file, options, callback) {
   if (options.noFileCheck && options.cache && options.cache[options.cacheKey]) {
-    winston.verbose('get template from cache with no filecheck: ' + file);
+    winston.verbose('get template from cache with no filecheck: ' + options.cacheKey);
     return callback(null, options.cache[options.cacheKey]);
   }
   findfilep(file, function(err, foundfile) {
@@ -152,7 +153,7 @@ function getTemplate(file, options, callback) {
       var c = options.cache[options.cacheKey],
           ext, dir;
       if (c && stats.mtime.getTime() <= c.mtime.getTime()) {
-        winston.verbose('get template from cache: ' + file);
+        winston.verbose('get template from cache: ' + options.cacheKey);
         return callback(null, c);
       }
 
@@ -189,13 +190,14 @@ function compile(file, options, callback) {
     async.forEach(partialNames,
                   function(name, cb) {
                     var pfile = path.join(dir, name + ext),
-                        poptions = _.clone(options);
+                        poptions = utile.clone(options);
                     poptions.cacheKey = pfile;
 
                     getTemplate(pfile, poptions, function(err, t) {
                       if (err) return cb(err);
                       tmpl.partials[name] = t.template;
-                      _.extend(tmpl.partials, t.partials);
+                      // _.extend(tmpl.partials, t.partials);
+                      tmpl.partials = utile.mixin(tmpl.partials, t.partials);
                       cb();
                     });
                   },
@@ -241,18 +243,24 @@ function hoganCompile(file, options, callback) {
 function createTemplateSource(t, options) {
   var str = '',
       p;
-  str += 'var ' + options.namespace + ' = ' + options.namespace + ' || {};\n';
-  str += options.namespace + '.' + t.name + ' = {\n';
-  str += '\ttemplate: new Hogan.Template(' + t.template + '),\n';
-  str += '\tpartials: {\n';
+
+  str += ';(function(root) {\n';
+  str += '\troot.' + t.name + ' = {\n';
+
+  str += '\t\ttemplate: new Hogan.Template(' + t.template + '),\n';
+  str += '\t\tpartials: {\n';
   for (p in t.partials) {
-    str += '\t\t' + p + ': new Hogan.Template(' + t.partials[p] + '),\n';
+    str += '\t\t\t' + p + ': new Hogan.Template(' + t.partials[p] + '),\n';
   }
-  str += '\t},\n';
-  str += '\trender: function(context){\n';
-  str += '\t\treturn this.template.render(context, this.partials);\n';
-  str += '\t}\n';
-  str += '};\n';
+  str += '\t\t},\n';
+  str += '\t\trender: function(context){\n';
+  str += '\t\t\treturn this.template.render(context, this.partials);\n';
+  str += '\t\t}\n';
+
+  str += '\t};\n';
+  str += '})( this.' + options.namespace + ' || this);\n';
+
+  if (options.debug) str += 'console.log("template: ' + t.name + ' loaded");\n';
 
   if (options && options.compress) {
     var jsp = require("uglify-js").parser,

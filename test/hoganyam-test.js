@@ -50,7 +50,7 @@ vows.describe('hoganyam').addBatch({
               result: null
             },
             context = vm.createContext(sandbox);
-        str += 'result = templates.test.render(' + JSON.stringify(data) + ')\n';
+        str += 'result = test.render(' + JSON.stringify(data) + ');\n';
         vm.runInContext(str, context);
         assert.equal(context.result, resultStr);
       }
