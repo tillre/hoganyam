@@ -2,7 +2,7 @@
   "author": "skoni",
   "name": "hoganyam",
   "description": "hogan template middleware and render function",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "homepage": "https://github.com/skoni/hoganyam",
   "repository": {
     "url": "git://github.com/skoni/hoganyam.git"
