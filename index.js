@@ -284,7 +284,7 @@ function findfilep(pathname, callback) {
   var basename = path.basename(pathname),
       dirname = path.dirname(pathname);
 
-  path.exists(pathname, function(exists) {
+  fs.exists(pathname, function(exists) {
     if (!exists && dirname === '/') {
       return callback(new Error('Cannot find file: ' + basename));
     }
