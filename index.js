@@ -3,10 +3,9 @@
 // Can be used as middleware or broadway plugin
 //
 // common options {
-//   debug:Boolean - show log messages
+//   debug:Boolean - check files for updates
 //   cache:Object - use your own cache object
 //   hoganOptions:Object - options for hoganjs
-//   noFileCheck:Boolean - dont check file for changes
 // }
 //
 
@@ -140,8 +139,8 @@ function render(file, context, options, callback) {
 // get the template from file or cache
 //
 function getTemplate(file, options, callback) {
-  if (options.noFileCheck && options.cache && options.cache[options.cacheKey]) {
-    winston.verbose('get template from cache with no filecheck: ' + options.cacheKey);
+  if (!options.debug && options.cache && options.cache[options.cacheKey]) {
+    winston.verbose('get template from cache: ' + options.cacheKey);
     return callback(null, options.cache[options.cacheKey]);
   }
   findfilep(file, function(err, foundfile) {
@@ -271,7 +270,6 @@ function createTemplateSource(t, options) {
     str = pro.gen_code(ast); // compressed code here
   }
 
-  // t.partials = null;
   t.template = str;
   return t;
 }
