@@ -18,6 +18,7 @@ vows.describe('hoganyam').addBatch({
     "should have the correct methods defined": function() {
       assert.isObject(hoganyam);
       assert.isFunction(hoganyam.provide);
+      assert.isFunction(hoganyam.providePacked);
       assert.isFunction(hoganyam.render);
       assert.isObject(hoganyam.plugin);
     },
@@ -29,7 +30,7 @@ vows.describe('hoganyam').addBatch({
         assert.equal(str, resultStr);
       }
     },
-    "used as middleware": {
+    "used as middleware for single template": {
       topic: function() {
         var self = this,
             next = self.callback,
@@ -53,6 +54,10 @@ vows.describe('hoganyam').addBatch({
         str += 'result = test.render(' + JSON.stringify(data) + ');\n';
         vm.runInContext(str, context);
         assert.equal(context.result, resultStr);
+      }
+    },
+    "used as middleware for multiple templates": {
+      topic: function() {
       }
     }
   }

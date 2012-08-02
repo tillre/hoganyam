@@ -1,12 +1,6 @@
 //
-// (pre)compile/render mustache templates with hogan
-// Can be used as middleware or broadway plugin
-//
-// common options {
-//   debug:Boolean - check files for updates
-//   cache:Object - use your own cache object
-//   hoganOptions:Object - options for hoganjs
-// }
+// (pre)compile/render mustache templates with hogan.js
+// can be used as middleware or broadway plugin
 //
 
 var hogan = require('hogan.js'),
@@ -18,99 +12,237 @@ var hogan = require('hogan.js'),
     winston = require('winston');
 
 //
-// cache for compiled templates
-//
-var objCache = {};
-// for compiled template src strings
-var srcCache = {};
-
-//
 // exports
 //
+
 // broadway plugin
 exports.plugin = {
   name: 'hoganyam',
-  attach: attach
+  attach: function(options) {
+    options.cache = options.cache || {};
+    this.render = function(res, name, context) {
+      context = context || {};
+      var file = path.join(options.dir, name + options.ext);
+      render(file, context, options, function(err, str) {
+        if (err) {
+          winston.error(err);
+          res.writeHead(200, {'Content-Type': 'text/plain'});
+          res.end(err.toString());
+        } else {
+          res.writeHead(200, {'Content-Type': 'text/html'});
+          res.end(str);
+        }
+      });
+    };
+  }
 };
-// connect-style middleware function
+
+// provide templates from a directory individually as connect-style middleware
 exports.provide = provide;
 
+// provide templates form a directory packed into one file as connect-style middleware
+exports.providePacked = providePacked;
+
+// render a template
 exports.render = render;
 
 
+
 //
-// return a connect-style middleware function that writes the source
-// of the precompiled template to the response object
+// provide compiled templates individually through url
+// connect-style middleware function
 //
 // @srcDir absolute path to templates
+// @srcUrl base url for request
 // @options {
-//   namespace:String - namespace for precompiled templates, default is 'templates'
-//   prefixpath:String - virtual base path to request templates from
-//   ext:String - template extension, default is '.html'
+//   namespace namespace for precompiled templates, default is 'templates'
+//   ext template extension, default is '.html'
+//   hoganOptions options for the hogan.js template engine
 // }
+//
 function provide(srcDir, options) {
   options = options || {};
-  options.cache = options.cache || srcCache;
-  options.namespace = options.namespace || 'templates';
+  options.ext = options.ext || '.html';
+  options.url = options.url || '';
+  options.namespace = options.namespace || 'this';
   options.hoganOptions = options.hoganOptions || {};
   options.hoganOptions.asString = true;
-  options.processTemplate = createTemplateSource;
-  options.ext = options.ext || '.html';
 
   var dstExt = /\.js$/,
-      srcExt = options.ext;
+      srcExt = options.ext,
+      cache = options.cache || {},
+      jsTemplate,
+      jst = '';
+
+  jst += ';(function(root) {\n';
+  jst += '  var template = new Hogan.Template({{{template}}});\n';
+  jst += '  var partials = {\n';
+  jst += '    {{#partials}}';
+  jst += '      "{{name}}": new Hogan.Template({{{template}}}),\n';
+  jst += '    {{/partials}}';
+  jst += '  };\n';
+  jst += '  root.templates["{{name}}"] = function(context) {\n';
+  jst += '    return template.render(context, partials);\n';
+  jst += '  };\n';
+  jst += '})({{namespace}});\n';
+  jsTemplate = hogan.compile(jst);
 
   return function compileAndSend(req, res, next) {
     if (req.method !== 'GET') return next();
 
     // build an absolute path
     var pathname = url.parse(req.url).pathname,
-        opts = utile.clone(options), // clone to avoid async race
-        parts, srcFile;
+        srcFile, src, ux;
 
     if (!pathname.match(dstExt)) return next();
-
-    // remove the prefixpath if there is one
-    parts = pathname.split('/');
-    if (opts.prefixpath) {
-      if (parts[1] !== opts.prefixpath) return next();
-      pathname = '/' + parts.slice(2, parts.length).join('/');
+    if (options.url) {
+      ux = new RegExp('^' + options.url);
+      if (!pathname.match(ux)) return next();
+      // remove prefix url and leading slashes
+      pathname = pathname.replace(ux, '').replace(/^\/*/, '');
     }
     srcFile = path.join(srcDir, pathname).replace(dstExt, srcExt);
 
-    opts.cacheKey = srcFile;
-    winston.info('setting cachekey to: ' + srcFile);
-    getTemplate(srcFile, opts, function(err,t) {
+    if (!options.debug && cache[srcFile]) {
+      winston.verbose('providing template from cache: ', srcFile);
+      sendResponse(res, cache[srcFile].source, cache[srcFile].mtime.toUTCString());
+    }
+    else {
+      getTemplate(srcFile, options, function(err,t) {
+        if (err) return next(err);
+        var name = createTemplateName(srcDir, srcFile, options.ext),
+            context = {
+              name: name,
+              template: t.template,
+              partials: [],
+              namespace: options.namespace
+            };
+        utile.each(t.partials, function(v, k) {
+          context.partials.push({
+            name: k,
+            template: v
+          });
+        });
+        src = jsTemplate.render(context);
+        if (!options.debug) {
+          cache[srcFile] = { source: src, mtime: t.mtime };
+        }
+        sendResponse(res, src, t.mtime.toUTCString());
+      });
+    }
+  };
+}
+
+//
+// pack all compiled templates into one js file
+//
+// @srcDir directory with templates
+// @options {
+//   @namespace namespace for precompiled templates, default is 'templates'
+//   @ext template extension, default is '.html'
+//   @hoganOptions options for the hogan.js template engine
+// }
+//
+function providePacked(srcDir, options) {
+  options = options || {};
+  options.url = options.url || '/templates.js';
+  options.ext = options.ext || '.html';
+  options.outputFile = options.outputFile || '';
+  options.namespace = options.namespace || 'this';
+  options.hoganOptions = options.hoganOptions || {};
+  options.hoganOptions.asString = true;
+
+  // delete previously generated file
+  if (options.outputFile && fs.existsSync(options.outputFile)) {
+    winston.verbose('removing previously generated file: ' + options.outputFile);
+    fs.unlinkSync(options.outputFile);
+  }
+
+  var jsTemplate = createTemplate();
+
+  function createTemplate() {
+    var jst = '';
+    jst += '// autogenerated file\n';
+    jst += ';(function(root){\n';
+    jst += '  var templates = {\n';
+    jst += '  {{#templates}}\n';
+    jst += '    "{{name}}": new Hogan.Template({{{template}}}),\n';
+    jst += '  {{/templates}}\n';
+    jst += '  };\n';
+    jst += '  var renderers = {\n';
+    jst += '  {{#templates}}\n';
+    jst += '    "{{name}}": function(context) {\n';
+    jst += '      return templates["{{name}}"].render(context, templates)\n';
+    jst += '    },\n';
+    jst += '  {{/templates}}\n';
+    jst += '  };\n';
+    jst += '  root.templates = renderers;\n';
+    jst += '})({{namespace}});\n';
+    return hogan.compile(jst);
+  }
+
+  return function compileAndSend(req, res, next) {
+    if (req.method !== 'GET') return next();
+
+    var reqUrl = url.parse(req.url).pathname,
+        src = '';
+
+    // only answer correct url
+    if (reqUrl !== options.url) return next();
+
+    compileDir(srcDir, options, function(err, templates) {
+      winston.verbose("compiling template dir: ", srcDir);
       if (err) return next(err);
-      res.setHeader('Date', new Date().toUTCString());
-      res.setHeader('Last-Modified', t.mtime.toUTCString());
-      res.setHeader('Content-Type', 'application/javascript');
-      res.setHeader('Content-Length', t.template.length);
-      res.end(t.template);
+
+      resolvePartialNames(templates);
+      src = jsTemplate.render({ templates: templates, namespace: options.namespace});
+
+      // in debug mode dont write file, so it will be regenerated each time
+      if (!options.debug && options.outputFile) {
+        fs.writeFile(options.outputFile, src, 'utf8', function(err) {
+          if (err) return next(err);
+          // send response this time, because the static middleware has probably already been called
+          sendResponse(res, src);
+        });
+      }
+      else {
+        sendResponse(res, src);
+      }
     });
   };
 }
 
 
 //
-// plugin attach function flatiron.broadway-style
-// @options see file header
+// resolve partial name like '../header' to qualified template name
+// @templates dict with templates
 //
-function attach(options) {
-  this.render = function(res, name, context) {
-    context = context || {};
-    var file = path.join(options.dir, name + options.ext);
-    render(file, context, options, function(err, str) {
-      if (err) {
-        winston.error(err);
-        res.writeHead(200, {'Content-Type': 'text/plain'});
-        res.end(err.toString());
-      } else {
-        res.writeHead(200, {'Content-Type': 'text/html'});
-        res.end(str);
-      }
+function resolvePartialNames(templates) {
+  templates.forEach(function(template) {
+    var parts = template.name.split(path.sep),
+        basePath = parts.length === 1 ? '' : parts.slice(0, parts.length - 1).join(path.sep);
+
+    template.partials = template.partials.map(function(partialName) {
+      return path.join(basePath, partialName);
     });
-  };
+  });
+}
+
+
+function createTemplateName(basePath, filePath, ext) {
+  var len = basePath.split(path.sep).length,
+      relPath = filePath.split(path.sep).slice(len).join(path.sep),
+      name = relPath.replace(new RegExp(ext + '$'), '');
+  return name;
+}
+
+
+function sendResponse(res, str, mtime) {
+  res.setHeader('Date', new Date().toUTCString());
+  res.setHeader('Last-Modified', mtime || (new Date).toUTCString());
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Content-Length', str.length);
+  res.end(str);
 }
 
 
@@ -125,43 +257,39 @@ function attach(options) {
 function render(file, context, options, callback) {
   winston.verbose('rendering: ' + file);
   options = options || {};
-  options.cache = options.cache || objCache;
-  options.cacheKey = file;
+  options.cache = options.cache || {};
   options.hoganOptions = options.hoganOptions || {};
 
-  getTemplate(file, options, function(err, t) {
-    callback(err, t ? t.template.render(context, t.partials) : err.message);
-  });
+  var key = file,
+      ct = options.cache[key];
+
+  if (!options.debug && ct) {
+    winston.verbose('render template from cache: ' + file);
+    callback(null, ct.template.render(context, ct.partials));
+  }
+  else {
+    getTemplate(file, options, function(err, t) {
+      if (!options.debug) options.cache[key] = t;
+      callback(err, t ? t.template.render(context, t.partials) : err.message);
+    });
+  }
 }
 
 
 //
-// get the template from file or cache
+// get the template file and compile it
 //
 function getTemplate(file, options, callback) {
-  if (!options.debug && options.cache && options.cache[options.cacheKey]) {
-    winston.verbose('get template from cache: ' + options.cacheKey);
-    return callback(null, options.cache[options.cacheKey]);
-  }
+  winston.verbose('getting template: ' + file);
   findfilep(file, function(err, foundfile) {
     if (err) return callback(err);
     fs.stat(foundfile, function(err, stats) {
       if (err) return callback(err);
-
-      // use the cached version if it exists and is recent enough
-      var c = options.cache[options.cacheKey],
-          ext, dir;
-      if (c && stats.mtime.getTime() <= c.mtime.getTime()) {
-        winston.verbose('get template from cache: ' + options.cacheKey);
-        return callback(null, c);
-      }
-
-      winston.verbose('compile template: ' + file);
+      var ext, dir;
       compile(foundfile, options, function(err, t) {
         if (err) return callback(err);
-        if (options.processTemplate) options.processTemplate(t, options);
+        // if (options.processTemplate) options.processTemplate(t, options);
         t.mtime = stats.mtime;
-        options.cache[options.cacheKey] = t;
         callback(null, t);
       });
     });
@@ -170,32 +298,29 @@ function getTemplate(file, options, callback) {
 
 
 //
-// compile template - passes a template object to the callback
+// compile template and partials
 //
-// {
-//   template:Function,
-//   partials:Dict of partial Functions
-// }
 function compile(file, options, callback) {
   var ext = path.extname(file),
       dir = path.dirname(file);
 
-  // compile the template file and all partials recusively
-  hoganCompile(file, options, function(err, tmpl, partialNames) {
+  // compile the template
+  hoganCompile(file, options.hoganOptions, function(err, template, partialNames) {
     if (err) return callback(err);
-
-    tmpl.name = path.basename(file, ext);
-
+    var tmpl = {
+      template: template,
+      name: path.basename(file, ext),
+      partials: {}
+    };
+    // compile the partials
     async.forEach(partialNames,
                   function(name, cb) {
                     var pfile = path.join(dir, name + ext),
                         poptions = utile.clone(options);
-                    poptions.cacheKey = pfile;
 
                     getTemplate(pfile, poptions, function(err, t) {
                       if (err) return cb(err);
                       tmpl.partials[name] = t.template;
-                      // _.extend(tmpl.partials, t.partials);
                       tmpl.partials = utile.mixin(tmpl.partials, t.partials);
                       cb();
                     });
@@ -207,71 +332,62 @@ function compile(file, options, callback) {
 }
 
 
-// compiles the template and extracts names of the partials
+//
+// compile template files in the directory and all subdirectories asynchronously
+// @basePath base path
+// @options
+// @callback call when finished
+//
+function compileDir(basePath, options, callback) {
+  // options = options || {};
+  // options.ext = options.ext || '.html';
+  // options.hoganOptions = options.hoganOptions || {};
+
+  var templates = [],
+      compileIterator = function(filePath, callback) {
+        if (!filePath.match(new RegExp(options.ext + '$'))) {
+          return;
+        }
+        hoganCompile(filePath, options.hoganOptions, function(err, template, partialNames) {
+          if (err) return callback(err);
+          // var len = basePath.split(path.sep).length,
+          //     relPath = filePath.split(path.sep).slice(len).join(path.sep),
+          //     name = relPath.replace(/.html$/, '');
+          templates.push({
+            name: createTemplateName(basePath, filePath, options.ext),
+            template: template,
+            partials: partialNames
+          });
+          callback();
+        });
+      };
+
+  eachFileInDir(basePath,
+                compileIterator,
+                function(err) {
+                  callback(err, templates);
+                });
+}
+
+
+//
+// compiles the template and extracts partial names
+// @file the template file
+// @options hogan options
+// @callback is called when finished
+//
 function hoganCompile(file, options, callback) {
   fs.readFile(file, 'utf8', function(err, str) {
     if (err) return callback(err);
     // let hogan scan the src into tokens and collect all of the partial names
     // partial tokens have the tag: '>'
     var tokens = hogan.scan(str),
-        // partialTokens = _.filter(tokens, function(t) {
-        //   return t.tag === '>';
-        // }),
-        // partialNames = _.map(partialTokens, function(t) {
-        //   return t.n;
-        // }),
         partialNames = tokens
                        .filter(function(t) { return t.tag === '>'; })
                        .map(function(t) { return t.n; }),
-        hgopts = options.hoganOptions,
-        tmpl = {};
-
-    // compile the tokens
-    tmpl.template = hogan.generate(hogan.parse(tokens, str, hgopts), str, hgopts);
-    tmpl.partials = {};
-    callback(err, tmpl, partialNames);
+        template = hogan.generate(hogan.parse(tokens, str, options), str, options);
+    callback(err, template, partialNames);
   });
-}
-
-
-//
-// transform template property of template object to proper js source
-// client can render template by calling
-// [namespace].[name].render(context);
-//
-function createTemplateSource(t, options) {
-  var str = '',
-      p;
-
-  str += ';(function(root) {\n';
-  str += '\troot.' + t.name + ' = {\n';
-
-  str += '\t\ttemplate: new Hogan.Template(' + t.template + '),\n';
-  str += '\t\tpartials: {\n';
-  for (p in t.partials) {
-    str += '\t\t\t' + p + ': new Hogan.Template(' + t.partials[p] + '),\n';
-  }
-  str += '\t\t},\n';
-  str += '\t\trender: function(context){\n';
-  str += '\t\t\treturn this.template.render(context, this.partials);\n';
-  str += '\t\t}\n';
-
-  str += '\t};\n';
-  str += '})( this.' + options.namespace + ' || this);\n';
-
-  if (options.debug) str += 'console.log("template: ' + t.name + ' loaded");\n';
-
-  if (options && options.compress) {
-    var jsp = require("uglify-js").parser,
-        pro = require("uglify-js").uglify,
-        ast = jsp.parse(str); // parse code and get the initial AST
-    ast = pro.ast_mangle(ast); // get a new AST with mangled names
-    ast = pro.ast_squeeze(ast); // get an AST with compression optimizations
-    str = pro.gen_code(ast); // compressed code here
-  }
-
-  t.template = str;
-  return t;
 }
 
 
@@ -294,4 +410,32 @@ function findfilep(pathname, callback) {
       callback(null, pathname);
     }
   });
+}
+
+
+//
+// call iterator on all files in the path and subpaths asynchronously
+// @startPath base path
+// @iterator iterator function(filePath, callback) {}
+// @callback call when finished
+//
+function eachFileInDir(startPath, iterator, callback) {
+  (function rec(basePath, callback) {
+    fs.stat(basePath, function(err, stats) {
+      if (err) return callback(err);
+      if (stats.isFile()) {
+        iterator(basePath, callback);
+      }
+      else if (stats.isDirectory()) {
+        fs.readdir(basePath, function(err, nodes) {
+          if (err) return callback(err);
+          utile.async.forEach(nodes,
+                              function(node, callback) {
+                                rec(path.join(basePath, node), callback);
+                              },
+                              callback);
+        });
+      }
+    });
+  })(startPath, callback);
 }
