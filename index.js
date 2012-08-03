@@ -40,8 +40,8 @@ exports.plugin = {
 // provide templates from a directory individually as connect-style middleware
 exports.provide = provide;
 
-// provide templates form a directory packed into one file as connect-style middleware
-exports.providePacked = providePacked;
+// bundle templates form a directory into one js-file as connect-style middleware
+exports.bundle = bundle;
 
 // render a template
 exports.render = render;
@@ -63,7 +63,7 @@ exports.render = render;
 function provide(srcDir, options) {
   options = options || {};
   options.ext = options.ext || '.html';
-  options.url = options.url || '';
+  options.mount = options.mount || '';
   options.namespace = options.namespace || 'this';
   options.hoganOptions = options.hoganOptions || {};
   options.hoganOptions.asString = true;
@@ -95,15 +95,15 @@ function provide(srcDir, options) {
         srcFile, src, ux;
 
     if (!pathname.match(dstExt)) return next();
-    if (options.url) {
-      ux = new RegExp('^' + options.url);
+    if (options.mount) {
+      ux = new RegExp('^' + options.mount);
       if (!pathname.match(ux)) return next();
       // remove prefix url and leading slashes
       pathname = pathname.replace(ux, '').replace(/^\/*/, '');
     }
     srcFile = path.join(srcDir, pathname).replace(dstExt, srcExt);
 
-    if (!options.debug && cache[srcFile]) {
+    if (!options.recompile && cache[srcFile]) {
       winston.verbose('providing template from cache: ', srcFile);
       sendResponse(res, cache[srcFile].source, cache[srcFile].mtime.toUTCString());
     }
@@ -124,7 +124,7 @@ function provide(srcDir, options) {
           });
         });
         src = jsTemplate.render(context);
-        if (!options.debug) {
+        if (!options.recompile) {
           cache[srcFile] = { source: src, mtime: t.mtime };
         }
         sendResponse(res, src, t.mtime.toUTCString());
@@ -134,7 +134,7 @@ function provide(srcDir, options) {
 }
 
 //
-// pack all compiled templates into one js file
+// bundle all compiled templates into one js file
 //
 // @srcDir directory with templates
 // @options {
@@ -143,20 +143,13 @@ function provide(srcDir, options) {
 //   @hoganOptions options for the hogan.js template engine
 // }
 //
-function providePacked(srcDir, options) {
+function bundle(srcDir, options) {
   options = options || {};
-  options.url = options.url || '/templates.js';
+  options.mount = options.mount || '/templates.js';
   options.ext = options.ext || '.html';
-  options.outputFile = options.outputFile || '';
   options.namespace = options.namespace || 'this';
   options.hoganOptions = options.hoganOptions || {};
   options.hoganOptions.asString = true;
-
-  // delete previously generated file
-  if (options.outputFile && fs.existsSync(options.outputFile)) {
-    winston.verbose('removing previously generated file: ' + options.outputFile);
-    fs.unlinkSync(options.outputFile);
-  }
 
   var jsTemplate = createTemplate();
 
@@ -188,7 +181,7 @@ function providePacked(srcDir, options) {
         src = '';
 
     // only answer correct url
-    if (reqUrl !== options.url) return next();
+    if (reqUrl !== options.mount) return next();
 
     compileDir(srcDir, options, function(err, templates) {
       winston.verbose("compiling template dir: ", srcDir);
@@ -197,17 +190,7 @@ function providePacked(srcDir, options) {
       resolvePartialNames(templates);
       src = jsTemplate.render({ templates: templates, namespace: options.namespace});
 
-      // in debug mode dont write file, so it will be regenerated each time
-      if (!options.debug && options.outputFile) {
-        fs.writeFile(options.outputFile, src, 'utf8', function(err) {
-          if (err) return next(err);
-          // send response this time, because the static middleware has probably already been called
-          sendResponse(res, src);
-        });
-      }
-      else {
-        sendResponse(res, src);
-      }
+      sendResponse(res, src);
     });
   };
 }
@@ -263,13 +246,13 @@ function render(file, context, options, callback) {
   var key = file,
       ct = options.cache[key];
 
-  if (!options.debug && ct) {
+  if (!options.recompile && ct) {
     winston.verbose('render template from cache: ' + file);
     callback(null, ct.template.render(context, ct.partials));
   }
   else {
     getTemplate(file, options, function(err, t) {
-      if (!options.debug) options.cache[key] = t;
+      if (!options.recompile) options.cache[key] = t;
       callback(err, t ? t.template.render(context, t.partials) : err.message);
     });
   }
