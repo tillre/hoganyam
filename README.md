@@ -1,5 +1,5 @@
 # hoganyam
-Yet another hogan.js(moustache templates) middleware. Can render templates with partials serverside or precompile them for use on the client. In debug mode the templates are recompiled every time, otherwise cached.
+Yet another hogan.js(moustache templates) middleware. Can render templates with partials serverside or precompile them for use on the client.
 
 ## Usage
 ``` js
@@ -13,9 +13,9 @@ Makes the templates available individually.
     app.use(hoganyam.provide(templatesDir, options));
 ```
 
-Makes the templates avaible packed into one js file.
+Bundle all templates in directory into one js file
 ``` js
-    app.use(hoganyam.providePacked(templatesDir), options));
+    app.use(hoganyam.bundle(templatesDir, options));
 ```
 
 ### Serverside rendering
