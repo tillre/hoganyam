@@ -1,0 +1,4 @@
+This is a little test for Mr. Hogan.
+Partial 1: Hello Mr. Hogan, this is partial one.
+Partial 2: Hello Mr. Hogan, this is partial two.
+Partial 3: Hello Mr. Hogan, this is partial three.

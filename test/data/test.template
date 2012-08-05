@@ -1,1 +1,4 @@
 This is {{ title }} for Mr. {{ name }}.
+Partial 1: {{> p1 }}
+Partial 2: {{> p2 }}
+Partial 3: {{> p3/p }}

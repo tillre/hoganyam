@@ -1,0 +1,1 @@
+Hello Mr. {{ name }}, this is partial one.
